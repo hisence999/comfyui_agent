@@ -69,7 +69,7 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "D:/gitapp/comfyui.png"
+  image_path: "C:/Users/25286/Downloads/柴犬.png"
   min_sdk_android: 21
 
 # For information on the generic Dart part of this file, see the
