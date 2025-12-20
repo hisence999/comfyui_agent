@@ -7,7 +7,7 @@ on:
 
 jobs:
   release:
-    name: Build and Release APK
+    name: Build and Release APKs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,14 +37,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
         
-      - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons
+      - name: Build APKs
+        run: flutter build apk --release --split-per-abi --no-tree-shake-icons
         
       - name: Create Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: build/app/outputs/flutter-apk/app-*.apk
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
