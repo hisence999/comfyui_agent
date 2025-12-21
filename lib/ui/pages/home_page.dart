@@ -8,6 +8,7 @@ import 'gallery_tab.dart';
 import 'history_tab.dart';
 import '../widgets/glass_container.dart';
 import '../../utils/theme.dart';
+import '../../providers/workflow_provider.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -59,6 +60,54 @@ class _HomePageState extends State<HomePage> {
             controller: _pageController,
             physics: const NeverScrollableScrollPhysics(),
             children: _pages,
+          ),
+
+          // Top Floating Status (Jump to running)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 10,
+            left: 24,
+            right: 24,
+            child: Consumer<WorkflowProvider>(
+              builder: (context, workflow, _) {
+                if (!workflow.isExecuting) return const SizedBox.shrink();
+                
+                return GestureDetector(
+                  onTap: () {
+                    _onItemTapped(0); // Jump to Workflow tab
+                  },
+                  child: GlassContainer(
+                    height: 44,
+                    borderRadius: 22,
+                    blur: 20,
+                    opacity: 0.8,
+                    color: Colors.blueAccent.withOpacity(0.1),
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            '正在生成: ${workflow.currentNodeName}',
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.blueAccent),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Text(
+                          '${(workflow.progress * 100).toStringAsFixed(0)}%',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.blueAccent),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
           ),
 
           // Floating Navigation Bar (Capsule Style)

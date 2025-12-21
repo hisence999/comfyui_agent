@@ -6,6 +6,7 @@ import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/workflow_provider.dart';
 import '../../utils/theme.dart';
@@ -242,38 +243,77 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
     
     // Get Resolution
     final file = File(path);
-    final bytes = await file.readAsBytes();
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    final size = '${frame.image.width} x ${frame.image.height}';
+    String size = "未知";
+    try {
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      size = '${frame.image.width} x ${frame.image.height}';
+    } catch (_) {}
 
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.4,
-        maxChildSize: 0.6,
-        builder: (_, scrollController) => Container(
-          decoration: BoxDecoration(
-            color: Theme.of(context).scaffoldBackgroundColor,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          padding: const EdgeInsets.all(20),
-          child: ListView(
-            controller: scrollController,
-            children: [
-              const Text('图片属性', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 20),
-              _buildInfoTag(context, '文件名', path.split('/').last),
-              _buildInfoTag(context, '分辨率', size),
-              _buildInfoTag(context, '本地路径', path, isLong: true),
-              const SizedBox(height: 20),
-            ],
+    // Construct public path hint for Android
+    String publicPath = path;
+    if (Platform.isAndroid && path.contains('comfy_images')) {
+      final filename = path.split('/').last;
+      publicPath = "/storage/emulated/0/Download/comfyui_client/$filename";
+    }
+
+    if (context.mounted) {
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        isScrollControlled: true,
+        builder: (context) => DraggableScrollableSheet(
+          initialChildSize: 0.5,
+          maxChildSize: 0.7,
+          builder: (_, scrollController) => Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: ListView(
+              controller: scrollController,
+              children: [
+                const Text('图片属性', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 20),
+                _buildInfoTag(context, '文件名', path.split('/').last),
+                _buildInfoTag(context, '分辨率', size),
+                _buildInfoTag(context, '公共存储路径', publicPath, isLong: true),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _openFolder(path),
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('打开所在文件夹'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent.withOpacity(0.1),
+                    foregroundColor: Colors.blueAccent,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
+            ),
           ),
         ),
-      ),
-    );
+      );
+    }
+  }
+
+  Future<void> _openFolder(String path) async {
+    final folderPath = File(path).parent.path;
+    final Uri uri = Uri.parse("file://$folderPath");
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
+      // Fallback or show error
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('无法直接打开文件夹，请在文件管理器中查看 Download/comfyui_client')),
+        );
+      }
+    }
   }
 
   Widget _buildInfoTag(BuildContext context, String label, String value, {bool isLong = false}) {
