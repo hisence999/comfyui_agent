@@ -19,21 +19,50 @@ class WorkflowTab extends StatefulWidget {
   State<WorkflowTab> createState() => _WorkflowTabState();
 }
 
-class _WorkflowTabState extends State<WorkflowTab> {
+class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClientMixin {
   final TextEditingController _ipController = TextEditingController();
+  final FocusNode _ipFocusNode = FocusNode(skipTraversal: true); // Prevent automatic focus shift
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
     final settings = Provider.of<SettingsProvider>(context, listen: false);
     _ipController.text = '${settings.ipAddress}:${settings.port}';
+    
+    // 延迟清除可能存在的焦点，防止页面重建时自动获取焦点
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ipFocusNode.unfocus();
+      FocusScope.of(context).unfocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _ipFocusNode.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    // Handle jump to running request
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = Provider.of<WorkflowProvider>(context, listen: false);
+      if (provider.shouldScrollToRunning) {
+        provider.resetScrollRequest();
+        _scrollToRunning(provider);
+      }
+    });
+
     return CustomScrollView(
+      controller: _scrollController,
       slivers: [
         // Frosted AppBar with Large Title
         SliverAppBar.large(
@@ -146,13 +175,18 @@ class _WorkflowTabState extends State<WorkflowTab> {
               Expanded(
                 child: TextField(
                   controller: _ipController,
+                  focusNode: _ipFocusNode,
+                  autofocus: false, // 明确禁止自动聚焦，防止页面返回时自动获取焦点
                   decoration: const InputDecoration(
                     border: InputBorder.none,
                     hintText: 'IP:Port',
                     isDense: true,
                   ),
                   style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
-                  onSubmitted: (value) => _connect(settings, workflow),
+                  onSubmitted: (value) {
+                    _ipFocusNode.unfocus();
+                    _connect(settings, workflow);
+                  },
                 ),
               ),
               IconButton(
@@ -223,8 +257,9 @@ class _WorkflowTabState extends State<WorkflowTab> {
 
   Widget _buildWorkflowCard(BuildContext context, WorkflowProvider provider, dynamic wf) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isActive = provider.currentWorkflowId == wf.id;
-    final isRunning = isActive && provider.isExecuting;
+    final isEditing = provider.currentWorkflowId == wf.id;
+    // Bind progress UI strictly to runningWorkflowId
+    final isRunning = provider.runningWorkflowId == wf.id && provider.isExecuting;
 
     return GestureDetector(
       onTap: () {
@@ -241,8 +276,8 @@ class _WorkflowTabState extends State<WorkflowTab> {
           color: isDark ? Colors.black : Colors.white,
           borderRadius: BorderRadius.circular(AppTheme.cardRadius),
           border: Border.all(
-            color: isActive ? Colors.blue.withOpacity(0.5) : (isDark ? Colors.white.withOpacity(0.1) : Colors.transparent),
-            width: isActive ? 2 : 1,
+            color: isEditing ? Colors.blue.withOpacity(0.5) : (isDark ? Colors.white.withOpacity(0.1) : Colors.transparent),
+            width: isEditing ? 2 : 1,
           ),
           boxShadow: AppTheme.softShadow(context),
         ),
@@ -300,7 +335,10 @@ class _WorkflowTabState extends State<WorkflowTab> {
                       onPressed: () => provider.cancelExecution(),
                     )
                   else
-                    const Icon(CupertinoIcons.chevron_right, color: Colors.grey, size: 16),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8.0),
+                      child: Icon(CupertinoIcons.chevron_right, color: isDark ? Colors.grey[700] : Colors.grey[300], size: 16),
+                    ),
                 ],
               ),
             ),
@@ -322,6 +360,22 @@ class _WorkflowTabState extends State<WorkflowTab> {
         ),
       ),
     );
+  }
+
+  void _scrollToRunning(WorkflowProvider provider) {
+    if (provider.runningWorkflowId == null) return;
+    
+    final index = provider.savedWorkflows.indexWhere((w) => w.id == provider.runningWorkflowId);
+    if (index != -1) {
+      // Estimate position: header (200) + cards (100 each)
+      // This is a heuristic since we don't have item heights
+      double offset = 200.0 + (index * 120.0); 
+      _scrollController.animateTo(
+        offset.clamp(0, _scrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+    }
   }
 
   void _showDeleteWorkflowDialog(BuildContext context, WorkflowProvider provider, String id) {

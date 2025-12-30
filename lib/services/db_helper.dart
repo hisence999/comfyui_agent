@@ -111,9 +111,14 @@ class DatabaseHelper {
     return await db.insert('history_records', record);
   }
 
-  Future<List<Map<String, dynamic>>> readAllHistory() async {
+  Future<List<Map<String, dynamic>>> readAllHistory({int? limit, int? offset}) async {
     final db = await instance.database;
-    return await db.query('history_records', orderBy: 'created_at DESC');
+    return await db.query(
+      'history_records', 
+      orderBy: 'created_at DESC, id DESC', // Stable sort for pagination
+      limit: limit,
+      offset: offset,
+    );
   }
 
   Future<int> deleteHistory(int id) async {

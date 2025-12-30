@@ -4,16 +4,17 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:saver_gallery/saver_gallery.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../services/api_service.dart';
 import '../services/websocket_service.dart';
 import '../services/db_helper.dart';
 import '../models/workflow.dart';
+import '../utils/storage_utils.dart';
 import 'history_provider.dart';
 
 class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
@@ -26,10 +27,23 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
   bool _isConnected = false;
   bool get isConnected => _isConnected;
   
+  // State 1: Currently being edited in ParameterEditor
   Map<String, dynamic>? _currentWorkflow;
   Map<String, dynamic>? get currentWorkflow => _currentWorkflow;
   String? _currentWorkflowId;
   String? get currentWorkflowId => _currentWorkflowId;
+
+  // State 2: Currently running on the server
+  String? _runningWorkflowId;
+  String? get runningWorkflowId => _runningWorkflowId;
+
+  bool _shouldScrollToRunning = false;
+  bool get shouldScrollToRunning => _shouldScrollToRunning;
+  void resetScrollRequest() => _shouldScrollToRunning = false;
+  void requestScrollToRunning() {
+    _shouldScrollToRunning = true;
+    notifyListeners();
+  }
   
   List<Workflow> _savedWorkflows = [];
   List<Workflow> get savedWorkflows => _savedWorkflows;
@@ -80,46 +94,44 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
       notifyListeners();
     });
     loadSavedWorkflows();
+    _autoConnect();
+  }
+
+  Future<void> _autoConnect() async {
+    final prefs = await SharedPreferences.getInstance();
+    final ip = prefs.getString('ipAddress') ?? '127.0.0.1';
+    final port = prefs.getString('port') ?? '8188';
+    connect(ip, port);
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Re-ping server and check for missed events
       _recoverStateAfterBack();
     }
   }
 
   Future<void> _recoverStateAfterBack() async {
     if (!_isExecuting || _currentPromptId == null) return;
-    print("Checking task status after resuming from background...");
-    
     try {
       final queue = await _apiService.getQueue();
       bool isStillInQueue = false;
-      
       final running = queue['queue_running'] as List;
       final pending = queue['queue_pending'] as List;
-      
-      if (running.any((e) => e[1] == _currentPromptId) || 
-          pending.any((e) => e[1] == _currentPromptId)) {
+      if (running.any((e) => e[1] == _currentPromptId) || pending.any((e) => e[1] == _currentPromptId)) {
         isStillInQueue = true;
       }
-
       if (!isStillInQueue) {
-        // Check history
         final history = await _apiService.getHistory();
         if (history.containsKey(_currentPromptId)) {
-          print("Task finished in background, triggering manual download");
           await _handleServerHistoryItem(_currentPromptId!, history[_currentPromptId!]);
           _isExecuting = false;
           _currentNodeId = null;
+          _runningWorkflowId = null;
           notifyListeners();
         }
       }
-    } catch (e) {
-      print("Recovery failed: $e");
-    }
+    } catch (_) {}
   }
   
   Future<void> loadSavedWorkflows() async {
@@ -171,6 +183,18 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
     _totalNodesInWorkflow = _currentWorkflow?.length ?? 0;
   }
 
+  void _syncToOverlay({bool finished = false}) async {
+    if (await FlutterOverlayWindow.isActive()) {
+      final payload = jsonEncode({
+        'node': currentNodeName,
+        'steps': nodeStepsInfo ?? "",
+        'progress': progress,
+        'finished': finished,
+      });
+      FlutterOverlayWindow.shareData(payload);
+    }
+  }
+
   void _handleWsMessage(Map<String, dynamic> message) async {
     final type = message['type'];
     final data = message['data'];
@@ -183,6 +207,8 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
              _currentNodeId = null;
              _currentPreview = null;
              _nodeStepsInfo = null;
+             _runningWorkflowId = null;
+             _syncToOverlay(finished: true);
           }
         }
         break;
@@ -194,6 +220,7 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
         _currentPreview = null;
         _nodeStepsInfo = null;
         _totalNodesInWorkflow = _currentWorkflow?.length ?? 0;
+        _syncToOverlay();
         break;
       case 'executing':
         final nodeId = data['node'];
@@ -202,6 +229,8 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
           _currentNodeId = null;
           _currentPreview = null;
           _nodeStepsInfo = null;
+          _runningWorkflowId = null;
+          _syncToOverlay(finished: true);
         } else {
           _isExecuting = true;
           if (_currentNodeId != null && _currentNodeId != nodeId) {
@@ -210,12 +239,14 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
           _currentNodeId = nodeId;
           _nodeProgress = 0;
           _nodeStepsInfo = null;
+          _syncToOverlay();
         }
         break;
       case 'progress':
         _nodeProgress = (data['value'] ?? 0) / (data['max'] ?? 1);
         _nodeStepsInfo = "步数: ${data['value']}/${data['max']}";
         _isExecuting = true;
+        _syncToOverlay();
         break;
       case 'executed':
         if (data['output'] != null) {
@@ -252,8 +283,11 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
   Future<void> queuePrompt() async {
     if (_currentWorkflow == null) return;
     _buildNodeNameMap();
+    
+    // Bind running state to the specific workflow ID
+    _runningWorkflowId = _currentWorkflowId;
 
-    // Handle Seed Logic (Automatic updates)
+    // Handle Seed Logic
     _currentWorkflow?.forEach((id, node) {
       if (node is Map && node['inputs'] != null) {
         final inputs = node['inputs'] as Map;
@@ -312,6 +346,7 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
       await DatabaseHelper.instance.createHistory(record);
       _historyProvider?.refreshHistory();
     } catch (e) {
+      _runningWorkflowId = null;
       rethrow;
     }
   }
@@ -320,18 +355,18 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
     try {
       await _apiService.interrupt();
       if (_currentPromptId != null) {
-        // Find local record and delete it if it's new/empty
         final localHistory = await DatabaseHelper.instance.readAllHistory();
         final record = localHistory.cast<Map?>().firstWhere((e) => e?['prompt_id'] == _currentPromptId, orElse: () => null);
         if (record != null) {
-          await DatabaseHelper.instance.deleteHistory(record['id']);
-          _historyProvider?.refreshHistory();
+          await deleteHistoryWithSync(record['id'], _currentPromptId!);
         }
       }
     } catch (_) {}
     _isExecuting = false;
     _currentNodeId = null;
     _nodeStepsInfo = null;
+    _runningWorkflowId = null;
+    _syncToOverlay(finished: true);
     notifyListeners();
   }
 
@@ -340,20 +375,21 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
     try {
       _objectInfo = await _apiService.getObjectInfo();
       notifyListeners();
-    } catch (e) {
-      print('Failed to fetch object info: $e');
-    }
+    } catch (_) {}
   }
 
   void loadWorkflow(String? id, Map<String, dynamic> workflow) {
     _currentWorkflowId = id;
     _currentWorkflow = workflow;
+    
+    // Reset execution state when switching workflow
     _isExecuting = false;
     _currentNodeId = null;
     _nodeProgress = 0.0;
     _nodesExecutedCount = 0;
     _currentPreview = null;
     _nodeStepsInfo = null;
+    
     _buildNodeNameMap();
     notifyListeners();
   }
@@ -368,9 +404,28 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
       final serverHistory = await _apiService.getHistory();
       final localHistory = await DatabaseHelper.instance.readAllHistory();
       final localPromptIds = localHistory.map((e) => e['prompt_id']).toSet();
+      
       for (var promptId in serverHistory.keys) {
+        // 检查是否已存在本地
         if (!localPromptIds.contains(promptId)) {
           await _handleServerHistoryItem(promptId, serverHistory[promptId]);
+        } else {
+          // 即使prompt_id已存在，也要检查文件是否实际存在
+          // 防止数据库记录存在但文件被删除的情况
+          final localRecord = localHistory.firstWhere(
+            (e) => e['prompt_id'] == promptId,
+            orElse: () => {},
+          );
+          if (localRecord.isNotEmpty) {
+            final imagePath = localRecord['image_path'] as String?;
+            if (imagePath != null && imagePath.isNotEmpty) {
+              final file = File(imagePath);
+              if (!await file.exists()) {
+                // 文件不存在，重新下载
+                await _handleServerHistoryItem(promptId, serverHistory[promptId]);
+              }
+            }
+          }
         }
       }
     } catch (_) {}
@@ -379,64 +434,154 @@ class WorkflowProvider with ChangeNotifier, WidgetsBindingObserver {
   Future<void> _handleServerHistoryItem(String promptId, dynamic serverItem) async {
     final outputs = serverItem['outputs'];
     if (outputs == null) return;
+    
     String? firstImagePath;
+    bool hasImages = false;
+    
     for (var nodeOut in outputs.values) {
       if (nodeOut['images'] != null) {
         for (var img in nodeOut['images']) {
-          final path = await _downloadAndSaveImageInternal(img['filename'], img['subfolder'], img['type'], promptId);
-          firstImagePath ??= path;
+          hasImages = true;
+          final filename = img['filename'] as String;
+          final subfolder = img['subfolder'] as String?;
+          final type = img['type'] as String?;
+          
+          // 检查图片是否已存在
+          final exists = await StorageUtils.imageExists(promptId, filename);
+          if (!exists) {
+            // 只下载不存在的图片
+            final path = await _downloadAndSaveImageInternal(filename, subfolder, type, promptId);
+            firstImagePath ??= path;
+          } else {
+            // 图片已存在，获取路径
+            final existingPath = await StorageUtils.getImageSavePath(promptId, filename);
+            firstImagePath ??= existingPath;
+          }
         }
       }
     }
-    if (firstImagePath != null) {
-      final record = {
-        'prompt_id': promptId,
-        'workflow_json': jsonEncode(serverItem['prompt'] ?? {}),
-        'params_json': '{}', 
-        'image_path': firstImagePath,
-        'created_at': DateTime.now().millisecondsSinceEpoch,
-      };
-      await DatabaseHelper.instance.createHistory(record);
-      _historyProvider?.refreshHistory();
+    
+    // 如果有图片，确保数据库中有记录
+    if (hasImages && firstImagePath != null) {
+      // 检查是否已存在数据库记录
+      final db = await DatabaseHelper.instance.database;
+      final existingRecords = await db.query(
+        'history_records',
+        where: 'prompt_id = ?',
+        whereArgs: [promptId]
+      );
+      
+      if (existingRecords.isEmpty) {
+        // 创建新记录
+        final record = {
+          'prompt_id': promptId,
+          'workflow_json': jsonEncode(serverItem['prompt'] ?? {}),
+          'params_json': '{}',
+          'image_path': firstImagePath,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+        };
+        await DatabaseHelper.instance.createHistory(record);
+        _historyProvider?.refreshHistory();
+      } else {
+        // 更新现有记录的图片路径（如果为空）
+        final existingRecord = existingRecords.first;
+        final existingImagePath = existingRecord['image_path'] as String?;
+        if (existingImagePath == null || existingImagePath.isEmpty) {
+          await db.update(
+            'history_records',
+            {'image_path': firstImagePath},
+            where: 'prompt_id = ?',
+            whereArgs: [promptId],
+          );
+          _historyProvider?.refreshHistory();
+        }
+      }
     }
   }
 
   Future<String?> _downloadAndSaveImageInternal(String filename, String? subfolder, String? type, String promptId) async {
      try {
-      final url = _apiService.getImageUrl(filename, subfolder, type);
-      final dio = Dio();
-      final response = await dio.get(url, options: Options(responseType: ResponseType.bytes));
-      
-      // 1. Save to APP documents directory (for internal UI)
-      final appDir = await getApplicationDocumentsDirectory();
-      final localPath = '${appDir.path}/comfy_images';
-      await Directory(localPath).create(recursive: true);
-      final file = File('$localPath/${promptId}_$filename');
-      if (!await file.exists()) {
-        await file.writeAsBytes(response.data);
-      }
-
-      // 2. Export to Public Gallery using saver_gallery
-      try {
-        await SaverGallery.saveFile(
-          filePath: file.path,
-          fileName: "${promptId.substring(0,8)}_$filename",
-          skipIfExists: false,
-        );
-      } catch (e) {
-        print('SaverGallery error: $e');
-      }
-
-      return file.path; // Return internal path for app UI
-    } catch (_) { return null; }
-  }
+       // 检查图片是否已存在
+       final exists = await StorageUtils.imageExists(promptId, filename);
+       if (exists) {
+         // 如果已存在，直接返回路径
+         return await StorageUtils.getImageSavePath(promptId, filename);
+       }
+       
+       final url = _apiService.getImageUrl(filename, subfolder, type);
+       final dio = Dio();
+       final response = await dio.get(url, options: Options(responseType: ResponseType.bytes));
+       
+       // 获取保存路径（Pictures/comfyui_client目录）
+       final savePath = await StorageUtils.getImageSavePath(promptId, filename);
+       final file = File(savePath);
+       
+       // 确保目录存在
+       await file.parent.create(recursive: true);
+       
+       // 保存图片文件
+       await file.writeAsBytes(response.data);
+       
+       // 注意：不再调用SaverGallery.saveFile，因为Pictures/comfyui_client目录已经是系统相册可访问的
+       // 这样可以避免双重保存问题
+       
+       return file.path;
+     } catch (_) {
+       return null;
+     }
+   }
 
   Future<void> deleteHistoryWithSync(int localId, String promptId) async {
     try {
+      final db = await DatabaseHelper.instance.database;
+      final maps = await db.query('history_records', where: 'id = ?', whereArgs: [localId]);
+      if (maps.isNotEmpty) {
+        final imagePath = maps.first['image_path'] as String;
+        if (imagePath.isNotEmpty) {
+          // 删除本地文件
+          await StorageUtils.deleteImageFile(imagePath);
+          // 删除系统相册中的文件
+          await _deleteFromSystemGallery(imagePath);
+        }
+      }
       await _apiService.deleteHistoryOnServer(promptId);
       await DatabaseHelper.instance.deleteHistory(localId);
       _historyProvider?.refreshHistory();
     } catch (_) {}
+  }
+
+  Future<void> _deleteFromSystemGallery(String localPath) async {
+    try {
+      final filename = localPath.split('/').last;
+      
+      // 获取所有图片相册
+      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(type: RequestType.image);
+      
+      for (var path in paths) {
+        // 检查所有相册，不仅仅是"全部"相册
+        final List<AssetEntity> assets = await path.getAssetListRange(start: 0, end: 200); // 增加搜索范围
+        
+        for (var asset in assets) {
+          try {
+            final title = await asset.title;
+            if (title != null) {
+              // 改进匹配逻辑：检查文件名是否包含在标题中，或者标题是否包含文件名
+              // 文件名格式: {prompt_id}_{original_filename}
+              final originalFilename = filename.contains('_') ? filename.split('_').sublist(1).join('_') : filename;
+              
+              if (title.contains(filename) || title.contains(originalFilename)) {
+                await PhotoManager.editor.deleteWithIds([asset.id]);
+                return; // 找到并删除后返回
+              }
+            }
+          } catch (_) {
+            // 跳过无法获取标题的资源
+          }
+        }
+      }
+    } catch (_) {
+      // 删除系统相册失败不影响主要功能
+    }
   }
   
   @override

@@ -17,74 +17,136 @@ class HistoryTab extends StatefulWidget {
   State<HistoryTab> createState() => _HistoryTabState();
 }
 
-class _HistoryTabState extends State<HistoryTab> {
+class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMixin {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  bool get wantKeepAlive => true;
+
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<HistoryProvider>(context, listen: false).refreshHistory();
+      final provider = Provider.of<HistoryProvider>(context, listen: false);
+      if (provider.historyItems.isEmpty) {
+        provider.refreshHistory();
+      }
     });
   }
 
   @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    final currentScroll = _scrollController.position.pixels;
+    
+    if (maxScroll - currentScroll <= 150) {
+      final provider = Provider.of<HistoryProvider>(context, listen: false);
+      if (!provider.isLoadingMore && provider.hasMore) {
+        provider.loadMoreHistory();
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return CustomScrollView(
-      slivers: [
-        // Frosted AppBar with Large Title
-        SliverAppBar.large(
-          expandedHeight: 120.0,
-          stretch: true,
-          pinned: false, // Hide completely on scroll
-          floating: true,
-          snap: true,
-          elevation: 0,
-          backgroundColor: isDark ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7),
-          flexibleSpace: FlexibleSpaceBar(
-            title: const Text("执行历史", style: TextStyle(fontWeight: FontWeight.bold)),
-            centerTitle: false,
-            titlePadding: const EdgeInsetsDirectional.only(start: 20, bottom: 16),
-            background: ClipRect(
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                child: Container(color: Colors.transparent),
-              ),
-            ),
-          ),
-        ),
-
-        // History List
-        Consumer<HistoryProvider>(
-          builder: (context, provider, child) {
-            if (provider.isLoading && provider.historyItems.isEmpty) {
-               return const SliverFillRemaining(child: Center(child: CircularProgressIndicator()));
-            }
-            
-            if (provider.historyItems.isEmpty) {
-              return const SliverFillRemaining(child: Center(child: Text('暂无历史记录', style: TextStyle(color: Colors.grey))));
-            }
-
-            return SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              sliver: SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final item = provider.historyItems[index];
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 16),
-                      child: _buildHistoryCard(context, provider, item),
-                    );
-                  },
-                  childCount: provider.historyItems.length,
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await Provider.of<HistoryProvider>(context, listen: false).refreshHistory();
+        },
+        edgeOffset: 120,
+        child: CustomScrollView(
+          controller: _scrollController,
+          physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+          slivers: [
+            // Frosted AppBar with Large Title
+            SliverAppBar.large(
+              expandedHeight: 120.0,
+              stretch: true,
+              pinned: false,
+              floating: true,
+              snap: true,
+              elevation: 0,
+              backgroundColor: isDark ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7),
+              flexibleSpace: FlexibleSpaceBar(
+                title: const Text("执行历史", style: TextStyle(fontWeight: FontWeight.bold)),
+                centerTitle: false,
+                titlePadding: const EdgeInsetsDirectional.only(start: 20, bottom: 16),
+                background: ClipRect(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(color: Colors.transparent),
+                  ),
                 ),
               ),
-            );
-          },
+            ),
+
+            // History List
+            Consumer<HistoryProvider>(
+              builder: (context, provider, child) {
+                if (provider.isLoading && provider.historyItems.isEmpty) {
+                   return const SliverFillRemaining(child: Center(child: CircularProgressIndicator()));
+                }
+                
+                if (provider.historyItems.isEmpty) {
+                  return const SliverFillRemaining(child: Center(child: Text('暂无历史记录', style: TextStyle(color: Colors.grey))));
+                }
+
+                return SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final item = provider.historyItems[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _buildHistoryCard(context, provider, item),
+                        );
+                      },
+                      childCount: provider.historyItems.length,
+                    ),
+                  ),
+                );
+              },
+            ),
+            
+            // Loading more indicator
+            Consumer<HistoryProvider>(
+              builder: (context, provider, child) {
+                if (provider.isLoadingMore) {
+                  return const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: CircularProgressIndicator.adaptive()),
+                    ),
+                  );
+                }
+                if (!provider.hasMore && provider.historyItems.isNotEmpty) {
+                  return const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: Text("— 已显示全部记录 —", style: TextStyle(color: Colors.grey, fontSize: 12))),
+                    ),
+                  );
+                }
+                return const SliverToBoxAdapter(child: SizedBox(height: 100));
+              },
+            ),
+          ],
         ),
-        
-        const SliverToBoxAdapter(child: SizedBox(height: 100)),
-      ],
+      ),
     );
   }
 
@@ -98,7 +160,7 @@ class _HistoryTabState extends State<HistoryTab> {
     return GestureDetector(
       onTap: () => _showHistoryDetail(context, item),
       onLongPress: () {
-        HapticFeedback.heavyImpact(); // Keep for long press
+        HapticFeedback.heavyImpact();
         _showDeleteHistoryDialog(context, id, promptId);
       },
       child: Container(
@@ -187,7 +249,15 @@ class _HistoryTabState extends State<HistoryTab> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('历史详情', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () {
+                      // 移除焦点，防止输入法闪现
+                      FocusManager.instance.primaryFocus?.unfocus();
+                      FocusScope.of(context).unfocus();
+                      Navigator.pop(context);
+                    }
+                  ),
                 ],
               ),
               const SizedBox(height: 10),
@@ -239,7 +309,6 @@ class _HistoryTabState extends State<HistoryTab> {
                 padding: EdgeInsets.zero,
                 backgroundColor: Colors.blue.withOpacity(0.03),
                 onPressed: () {
-                  HapticFeedback.selectionClick();
                   Clipboard.setData(ClipboardData(text: val.toString()));
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已复制 $key'), duration: const Duration(seconds: 1)));
                 },
@@ -278,7 +347,6 @@ class _HistoryTabState extends State<HistoryTab> {
   Widget _buildCopyableText(BuildContext context, String text) {
     return GestureDetector(
       onTap: () {
-        HapticFeedback.selectionClick();
         Clipboard.setData(ClipboardData(text: text));
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制到剪贴板'), duration: Duration(seconds: 1)));
       },

@@ -58,6 +58,19 @@ class _ParameterEditorState extends State<ParameterEditor> {
             pinned: true,
             elevation: 0,
             backgroundColor: isDark ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7),
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+              onPressed: () {
+                // 强制移除所有焦点，防止输入法闪现
+                FocusManager.instance.primaryFocus?.unfocus();
+                FocusScope.of(context).unfocus();
+                
+                // 延迟返回，确保焦点完全移除
+                Future.delayed(const Duration(milliseconds: 50), () {
+                  Navigator.pop(context);
+                });
+              },
+            ),
             flexibleSpace: FlexibleSpaceBar(
               title: const Text("参数调节", style: TextStyle(fontWeight: FontWeight.bold)),
               centerTitle: true,

@@ -1,12 +1,13 @@
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:open_filex/open_filex.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/workflow_provider.dart';
 import '../../utils/theme.dart';
@@ -18,30 +19,70 @@ class GalleryTab extends StatefulWidget {
   State<GalleryTab> createState() => _GalleryTabState();
 }
 
-class _GalleryTabState extends State<GalleryTab> {
+class _GalleryTabState extends State<GalleryTab> with AutomaticKeepAliveClientMixin {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  bool get wantKeepAlive => true;
+
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<HistoryProvider>(context, listen: false).refreshHistory();
+      final provider = Provider.of<HistoryProvider>(context, listen: false);
+      if (provider.historyItems.isEmpty) {
+        provider.refreshHistory();
+      }
     });
   }
 
   @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    final currentScroll = _scrollController.position.pixels;
+    
+    // Trigger load more when 200px from bottom
+    if (maxScroll - currentScroll <= 200) {
+      final provider = Provider.of<HistoryProvider>(context, listen: false);
+      if (!provider.isLoadingMore && provider.hasMore) {
+        provider.loadMoreHistory();
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return CustomScrollView(
-      slivers: [
-        // Frosted AppBar with Large Title
-        SliverAppBar.large(
-          expandedHeight: 120.0,
-          stretch: true,
-          pinned: false, // Hide completely on scroll
-          floating: true,
-          snap: true,
-          elevation: 0,
-          backgroundColor: isDark ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7),
+    return Scaffold(
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await Provider.of<HistoryProvider>(context, listen: false).refreshHistory();
+        },
+        edgeOffset: 100,
+        child: CustomScrollView(
+          controller: _scrollController,
+          physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+          slivers: [
+            // Frosted AppBar with Large Title
+            SliverAppBar.large(
+              expandedHeight: 120.0,
+              stretch: true,
+              pinned: false,
+              floating: true,
+              snap: true,
+              elevation: 0,
+              backgroundColor: isDark ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7),
           flexibleSpace: FlexibleSpaceBar(
             title: const Text("生成图库", style: TextStyle(fontWeight: FontWeight.bold)),
             centerTitle: false,
@@ -53,75 +94,120 @@ class _GalleryTabState extends State<GalleryTab> {
               ),
             ),
           ),
+          actions: [
+            IconButton(
+              icon: const Icon(CupertinoIcons.refresh_bold, size: 20),
+              onPressed: () {
+                HapticFeedback.mediumImpact();
+                Provider.of<HistoryProvider>(context, listen: false).syncLocalImages();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('正在扫描本地缺失图片...'), duration: Duration(seconds: 2)),
+                );
+              },
+            ),
+            const SizedBox(width: 8),
+          ],
         ),
 
-        // Gallery Grid
-        Consumer<HistoryProvider>(
-          builder: (context, provider, child) {
-            if (provider.isLoading && provider.imageUrls.isEmpty) {
-               return const SliverFillRemaining(child: Center(child: CircularProgressIndicator()));
-            }
-            
-            if (provider.imageUrls.isEmpty) {
-              return const SliverFillRemaining(child: Center(child: Text('暂无生成图片', style: TextStyle(color: Colors.grey))));
-            }
+            // Gallery Grid
+            Consumer<HistoryProvider>(
+              builder: (context, provider, child) {
+                if (provider.isLoading && provider.imageUrls.isEmpty) {
+                   return const SliverFillRemaining(child: Center(child: CircularProgressIndicator()));
+                }
+                
+                if (provider.imageUrls.isEmpty) {
+                  return const SliverFillRemaining(
+                    child: Center(child: Text('暂无生成图片', style: TextStyle(color: Colors.grey)))
+                  );
+                }
 
-            return SliverPadding(
-              padding: const EdgeInsets.all(12),
-              sliver: SliverMasonryGrid.count(
-                crossAxisCount: 2,
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-                itemBuilder: (context, index) {
-                  final path = provider.imageUrls[index];
-                  return GestureDetector(
-                  onTap: () async {
-                    final imageProvider = FileImage(File(path));
-                      await precacheImage(imageProvider, context);
-                      if (!mounted) return;
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => _FullScreenGallery(
-                            imagePaths: provider.imageUrls,
-                            initialIndex: index,
+                return SliverPadding(
+                  padding: const EdgeInsets.all(12),
+                  sliver: SliverMasonryGrid.count(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    childCount: provider.imageUrls.length,
+                    itemBuilder: (context, index) {
+                      final path = provider.imageUrls[index];
+                      
+                      return RepaintBoundary(
+                        child: GestureDetector(
+                          onTap: () async {
+                            final imageProvider = FileImage(File(path));
+                            await precacheImage(imageProvider, context);
+                            if (!mounted) return;
+                            Navigator.push(
+                              context,
+                              PageRouteBuilder(
+                                pageBuilder: (context, animation, secondaryAnimation) => _FullScreenGallery(
+                                  imagePaths: provider.imageUrls,
+                                  initialIndex: index,
+                                ),
+                                transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                                  return FadeTransition(opacity: animation, child: child);
+                                },
+                              ),
+                            );
+                          },
+                          onLongPress: () {
+                            HapticFeedback.heavyImpact();
+                            _showDeleteDialog(context, provider, index);
+                          },
+                          child: Hero(
+                            tag: path,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                boxShadow: AppTheme.softShadow(context),
+                                borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+                                child: Image.file(
+                                  File(path),
+                                  cacheWidth: 350,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => Container(
+                                    height: 200, color: Colors.grey.withOpacity(0.2), child: const Icon(Icons.error)
+                                  ),
+                                ),
+                              ),
+                            ),
                           ),
                         ),
                       );
                     },
-                    onLongPress: () {
-                      HapticFeedback.heavyImpact(); // Keep for long press
-                      _showDeleteDialog(context, provider, index);
-                    },
-                    child: Hero(
-                      tag: path,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          boxShadow: AppTheme.softShadow(context),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-                          child: Image.file(
-                            File(path),
-                            cacheWidth: 300,
-                            errorBuilder: (context, error, stackTrace) => Container(
-                              height: 200, color: Colors.grey.withOpacity(0.2), child: const Icon(Icons.error)
-                            ),
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      ),
+                  ),
+                );
+              },
+            ),
+            
+            // Bottom Loading Indicator / Finish line
+            Consumer<HistoryProvider>(
+              builder: (context, provider, child) {
+                if (provider.isLoadingMore) {
+                  return const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: CircularProgressIndicator.adaptive()),
                     ),
                   );
-                },
-                childCount: provider.imageUrls.length,
-              ),
-            );
-          },
+                }
+                if (!provider.hasMore && provider.imageUrls.isNotEmpty) {
+                  return const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: Text("— 到底了 —", style: TextStyle(color: Colors.grey, fontSize: 12))),
+                    ),
+                  );
+                }
+                return const SliverToBoxAdapter(child: SizedBox(height: 100));
+              },
+            ),
+          ],
         ),
-        
-        const SliverToBoxAdapter(child: SizedBox(height: 100)),
-      ],
+      ),
     );
   }
 
@@ -143,7 +229,7 @@ class _GalleryTabState extends State<GalleryTab> {
               Provider.of<WorkflowProvider>(context, listen: false).deleteHistoryWithSync(localId, promptId);
               Navigator.pop(context);
             },
-            child: const Text('同步删除', style: TextStyle(color: Colors.red)),
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -170,6 +256,12 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
     super.initState();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
+    
+    // 初始化时移除焦点，防止输入法闪现
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      FocusScope.of(context).unfocus();
+    });
   }
 
   @override
@@ -208,7 +300,16 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
                 ),
                 child: IconButton(
                   icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18),
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: () {
+                    // 强制移除所有焦点，防止输入法闪现
+                    FocusManager.instance.primaryFocus?.unfocus();
+                    FocusScope.of(context).unfocus();
+                    
+                    // 延迟返回，确保焦点完全移除
+                    Future.delayed(const Duration(milliseconds: 50), () {
+                      Navigator.pop(context);
+                    });
+                  },
                 ),
               ),
             ),
@@ -226,7 +327,9 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
                 ),
                 child: IconButton(
                   icon: const Icon(Icons.info_outline, color: Colors.white, size: 20),
-                  onPressed: () => _showParams(context),
+                  onPressed: () {
+                    _showParams(context);
+                  },
                 ),
               ),
             ),
@@ -251,11 +354,27 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
       size = '${frame.image.width} x ${frame.image.height}';
     } catch (_) {}
 
-    // Construct public path hint for Android
+    // 构造公共路径提示
     String publicPath = path;
-    if (Platform.isAndroid && path.contains('comfy_images')) {
-      final filename = path.split('/').last;
-      publicPath = "/storage/emulated/0/Download/comfyui_client/$filename";
+    final filename = path.split('/').last;
+    
+    // 如果路径包含应用私有目录，显示映射的公共路径
+    if (Platform.isAndroid) {
+      if (path.contains('comfy_images')) {
+        // 旧路径：应用私有目录，映射到Download目录
+        publicPath = "/storage/emulated/0/Download/comfyui_client/$filename";
+      } else if (path.contains('Pictures/comfyui_client')) {
+        // 新路径：Pictures目录，已经是公共路径
+        publicPath = path;
+      }
+    } else if (Platform.isIOS) {
+      if (path.contains('Documents/comfy_images')) {
+        // 旧路径：应用私有目录
+        publicPath = "应用私有目录/$filename";
+      } else if (path.contains('Documents/Pictures/comfyui_client')) {
+        // 新路径：Pictures目录
+        publicPath = "Pictures/comfyui_client/$filename";
+      }
     }
 
     if (context.mounted) {
@@ -264,8 +383,8 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
         backgroundColor: Colors.transparent,
         isScrollControlled: true,
         builder: (context) => DraggableScrollableSheet(
-          initialChildSize: 0.5,
-          maxChildSize: 0.7,
+          initialChildSize: 0.4,
+          maxChildSize: 0.6,
           builder: (_, scrollController) => Container(
             decoration: BoxDecoration(
               color: Theme.of(context).scaffoldBackgroundColor,
@@ -302,15 +421,21 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
   }
 
   Future<void> _openFolder(String path) async {
-    final folderPath = File(path).parent.path;
-    final Uri uri = Uri.parse("file://$folderPath");
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri);
-    } else {
-      // Fallback or show error
+    try {
+      final folderPath = File(path).parent.path;
+      // Using open_filex to open the folder
+      final result = await OpenFilex.open(folderPath);
+      if (result.type != ResultType.done) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('无法打开文件夹: ${result.message}')),
+          );
+        }
+      }
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('无法直接打开文件夹，请在文件管理器中查看 Download/comfyui_client')),
+          const SnackBar(content: Text('打开文件夹失败，请手动在文件管理器中查看')),
         );
       }
     }
