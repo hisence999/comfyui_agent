@@ -6,6 +6,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../../mixins/unfocus_mixin.dart';
 import '../../providers/settings_provider.dart';
 import '../../providers/workflow_provider.dart';
 import '../../utils/theme.dart';
@@ -19,10 +20,11 @@ class WorkflowTab extends StatefulWidget {
   State<WorkflowTab> createState() => _WorkflowTabState();
 }
 
-class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClientMixin {
+class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClientMixin, UnfocusOnNavigationMixin {
   final TextEditingController _ipController = TextEditingController();
-  final FocusNode _ipFocusNode = FocusNode(skipTraversal: true); // Prevent automatic focus shift
+  final FocusNode _ipFocusNode = FocusNode(skipTraversal: true);
   final ScrollController _scrollController = ScrollController();
+  String? _lastSyncedAddress;
 
   @override
   bool get wantKeepAlive => true;
@@ -30,21 +32,29 @@ class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClient
   @override
   void initState() {
     super.initState();
-    final settings = Provider.of<SettingsProvider>(context, listen: false);
-    _ipController.text = '${settings.ipAddress}:${settings.port}';
-    
-    // 延迟清除可能存在的焦点，防止页面重建时自动获取焦点
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _ipFocusNode.unfocus();
-      FocusScope.of(context).unfocus();
-    });
+    // Initial value will be set in build when settings are loaded
   }
 
   @override
   void dispose() {
     _ipFocusNode.dispose();
     _scrollController.dispose();
+    _ipController.dispose();
     super.dispose();
+  }
+
+  /// Sync IP field with settings when settings change (e.g., after async load)
+  void _syncIpFieldIfNeeded(SettingsProvider settings) {
+    // Only sync when user is not actively editing
+    if (_ipFocusNode.hasFocus) return;
+
+    final savedAddress = '${settings.ipAddress}:${settings.port}';
+
+    // Sync if this is a new address from settings (loaded from SharedPreferences)
+    if (_lastSyncedAddress != savedAddress) {
+      _ipController.text = savedAddress;
+      _lastSyncedAddress = savedAddress;
+    }
   }
 
   @override
@@ -156,6 +166,9 @@ class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClient
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Consumer2<SettingsProvider, WorkflowProvider>(
       builder: (context, settings, workflow, child) {
+        // Sync IP field with persisted settings (handles async load from SharedPreferences)
+        _syncIpFieldIfNeeded(settings);
+
         return Container(
           height: 64,
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -176,7 +189,7 @@ class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClient
                 child: TextField(
                   controller: _ipController,
                   focusNode: _ipFocusNode,
-                  autofocus: false, // 明确禁止自动聚焦，防止页面返回时自动获取焦点
+                  autofocus: false,
                   decoration: const InputDecoration(
                     border: InputBorder.none,
                     hintText: 'IP:Port',

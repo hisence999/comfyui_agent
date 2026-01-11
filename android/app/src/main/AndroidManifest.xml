@@ -13,7 +13,8 @@
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon"
         android:usesCleartextTraffic="true"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:allowBackup="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -41,6 +42,16 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- OverlayService for flutter_overlay_window plugin -->
+        <service
+            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="用于在后台显示任务执行进度的悬浮窗"/>
+        </service>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

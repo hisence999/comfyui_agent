@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
+// Ensure the entry point is correctly annotated for the latest plugin version
 @pragma("vm:entry-point")
 void overlayMain() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MaterialApp(
     debugShowCheckedModeBanner: false,
     home: MyFloatingWidget(),

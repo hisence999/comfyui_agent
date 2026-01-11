@@ -8,6 +8,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../../mixins/unfocus_mixin.dart';
 import '../../providers/workflow_provider.dart';
 import '../../utils/theme.dart';
 
@@ -18,7 +19,7 @@ class ParameterEditor extends StatefulWidget {
   State<ParameterEditor> createState() => _ParameterEditorState();
 }
 
-class _ParameterEditorState extends State<ParameterEditor> {
+class _ParameterEditorState extends State<ParameterEditor> with UnfocusOnNavigationMixin {
   Timer? _debounce;
   Map<String, dynamic> _localWorkflow = {};
 
@@ -60,16 +61,7 @@ class _ParameterEditorState extends State<ParameterEditor> {
             backgroundColor: isDark ? Colors.black.withOpacity(0.7) : Colors.white.withOpacity(0.7),
             leading: IconButton(
               icon: const Icon(Icons.arrow_back_ios_new, size: 20),
-              onPressed: () {
-                // 强制移除所有焦点，防止输入法闪现
-                FocusManager.instance.primaryFocus?.unfocus();
-                FocusScope.of(context).unfocus();
-                
-                // 延迟返回，确保焦点完全移除
-                Future.delayed(const Duration(milliseconds: 50), () {
-                  Navigator.pop(context);
-                });
-              },
+              onPressed: () => popWithUnfocus(),
             ),
             flexibleSpace: FlexibleSpaceBar(
               title: const Text("参数调节", style: TextStyle(fontWeight: FontWeight.bold)),

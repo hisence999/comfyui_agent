@@ -8,6 +8,7 @@ import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:provider/provider.dart';
 import 'package:open_filex/open_filex.dart';
+import '../../mixins/unfocus_mixin.dart';
 import '../../providers/history_provider.dart';
 import '../../providers/workflow_provider.dart';
 import '../../utils/theme.dart';
@@ -19,7 +20,7 @@ class GalleryTab extends StatefulWidget {
   State<GalleryTab> createState() => _GalleryTabState();
 }
 
-class _GalleryTabState extends State<GalleryTab> with AutomaticKeepAliveClientMixin {
+class _GalleryTabState extends State<GalleryTab> with AutomaticKeepAliveClientMixin, UnfocusOnNavigationMixin {
   final ScrollController _scrollController = ScrollController();
 
   @override
@@ -247,7 +248,7 @@ class _FullScreenGallery extends StatefulWidget {
   State<_FullScreenGallery> createState() => _FullScreenGalleryState();
 }
 
-class _FullScreenGalleryState extends State<_FullScreenGallery> {
+class _FullScreenGalleryState extends State<_FullScreenGallery> with UnfocusOnNavigationMixin {
   late PageController _pageController;
   late int _currentIndex;
 
@@ -256,12 +257,6 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
     super.initState();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
-    
-    // 初始化时移除焦点，防止输入法闪现
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      FocusManager.instance.primaryFocus?.unfocus();
-      FocusScope.of(context).unfocus();
-    });
   }
 
   @override
@@ -300,16 +295,7 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
                 ),
                 child: IconButton(
                   icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18),
-                  onPressed: () {
-                    // 强制移除所有焦点，防止输入法闪现
-                    FocusManager.instance.primaryFocus?.unfocus();
-                    FocusScope.of(context).unfocus();
-                    
-                    // 延迟返回，确保焦点完全移除
-                    Future.delayed(const Duration(milliseconds: 50), () {
-                      Navigator.pop(context);
-                    });
-                  },
+                  onPressed: () => popWithUnfocus(),
                 ),
               ),
             ),

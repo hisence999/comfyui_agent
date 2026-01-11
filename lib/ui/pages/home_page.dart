@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart' as ow;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
+import '../../mixins/unfocus_mixin.dart';
 import 'workflow_tab.dart';
 import 'gallery_tab.dart';
 import 'history_tab.dart';
@@ -19,10 +21,13 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver, UnfocusOnNavigationMixin {
   int _currentIndex = 0;
   final PageController _pageController = PageController();
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
+
+  // Track notification progress update
+  Timer? _progressNotificationTimer;
 
   @override
   void initState() {
@@ -42,6 +47,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
+    _progressNotificationTimer?.cancel();
     super.dispose();
   }
 
@@ -55,56 +61,149 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final workflow = Provider.of<WorkflowProvider>(context, listen: false);
-    
+
     if (state == AppLifecycleState.paused) {
       if (workflow.isExecuting) {
-        _showOverlay();
+        _showOverlayWithFallback();
       }
     } else if (state == AppLifecycleState.resumed) {
       ow.FlutterOverlayWindow.closeOverlay();
+      _progressNotificationTimer?.cancel();
       _notificationsPlugin.cancel(888);
     }
   }
 
-  Future<void> _showOverlay() async {
-    bool isGranted = await ow.FlutterOverlayWindow.isPermissionGranted();
-    if (!isGranted) {
-      bool? granted = await ow.FlutterOverlayWindow.requestPermission();
-      if (granted != true) return;
+  /// Show overlay with retry mechanism and fallback to notification
+  Future<void> _showOverlayWithFallback() async {
+    bool overlayShown = false;
+
+    // Try to show overlay with retry
+    for (int attempt = 0; attempt < 3; attempt++) {
+      overlayShown = await _tryShowOverlay();
+      if (overlayShown) break;
+      await Future.delayed(const Duration(milliseconds: 200));
     }
 
-    if (!await ow.FlutterOverlayWindow.isActive()) {
-      await ow.FlutterOverlayWindow.showOverlay(
-        enableDrag: true,
-        flag: ow.OverlayFlag.defaultFlag,
-        alignment: ow.OverlayAlignment.topCenter,
-        visibility: ow.NotificationVisibility.visibilityPublic,
-        positionGravity: ow.PositionGravity.auto,
-        height: 180, 
-        width: ow.WindowSize.matchParent,
-      );
-      _showForegroundNotification();
-    }
+    // Always show progress notification as primary or fallback
+    _startProgressNotification(overlayShown);
   }
 
-  Future<void> _showForegroundNotification() async {
-    const androidDetails = AndroidNotificationDetails(
-      'comfy_overlay_channel',
-      '后台生成监控',
-      channelDescription: '确保应用在后台生成时不被中断',
+  /// Start periodic progress notification updates
+  void _startProgressNotification(bool overlayActive) {
+    _progressNotificationTimer?.cancel();
+
+    // Update notification every second
+    _progressNotificationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      final workflow = Provider.of<WorkflowProvider>(context, listen: false);
+
+      if (!workflow.isExecuting) {
+        timer.cancel();
+        _notificationsPlugin.cancel(888);
+        return;
+      }
+
+      _showProgressNotification(
+        workflow.currentNodeName,
+        workflow.nodeStepsInfo ?? '',
+        workflow.progress,
+        overlayActive,
+      );
+    });
+
+    // Show initial notification immediately
+    final workflow = Provider.of<WorkflowProvider>(context, listen: false);
+    _showProgressNotification(
+      workflow.currentNodeName,
+      workflow.nodeStepsInfo ?? '',
+      workflow.progress,
+      overlayActive,
+    );
+  }
+
+  /// Show notification with progress bar
+  Future<void> _showProgressNotification(
+    String nodeName,
+    String stepsInfo,
+    double progress,
+    bool overlayActive,
+  ) async {
+    final progressPercent = (progress * 100).toInt();
+    final body = overlayActive
+        ? '$nodeName $stepsInfo'
+        : '$nodeName $stepsInfo ($progressPercent%)';
+
+    final androidDetails = AndroidNotificationDetails(
+      'comfy_progress_channel',
+      '生成进度',
+      channelDescription: '显示AI图片生成进度',
       importance: Importance.low,
       priority: Priority.low,
       ongoing: true,
       autoCancel: false,
       showWhen: true,
+      showProgress: true,
+      maxProgress: 100,
+      progress: progressPercent,
+      // Use indeterminate when progress is 0
+      indeterminate: progress <= 0,
     );
-    
+
     await _notificationsPlugin.show(
       888,
-      'ComfyUI 助手',
-      '正在后台保持运行...',
-      const NotificationDetails(android: androidDetails),
+      'ComfyUI 生成中',
+      body,
+      NotificationDetails(android: androidDetails),
     );
+  }
+
+  /// Try to show overlay, returns true if successful
+  Future<bool> _tryShowOverlay() async {
+    try {
+      // Check if overlay permission is granted
+      bool isGranted = await ow.FlutterOverlayWindow.isPermissionGranted();
+      print('Overlay permission granted: $isGranted');
+
+      if (!isGranted) {
+        // Request permission if not granted
+        bool? granted = await ow.FlutterOverlayWindow.requestPermission();
+        print('Overlay permission request result: $granted');
+        if (granted != true) {
+          print('Overlay permission request denied');
+          return false;
+        }
+        // Wait for permission to be fully granted
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+
+      // Check if overlay is already active
+      bool isActive = await ow.FlutterOverlayWindow.isActive();
+      print('Overlay is active: $isActive');
+
+      if (!isActive) {
+        // Show overlay with optimized configuration
+        await ow.FlutterOverlayWindow.showOverlay(
+          enableDrag: true,
+          flag: ow.OverlayFlag.defaultFlag,
+          alignment: ow.OverlayAlignment.topCenter,
+          visibility: ow.NotificationVisibility.visibilityPublic,
+          positionGravity: ow.PositionGravity.auto,
+          height: 80,
+          width: ow.WindowSize.matchParent,
+        );
+        print('Overlay shown successfully');
+
+        // Wait for overlay to initialize
+        await Future.delayed(const Duration(milliseconds: 200));
+
+        // Verify overlay is active
+        isActive = await ow.FlutterOverlayWindow.isActive();
+        return isActive;
+      }
+      return true;
+    } catch (e) {
+      print('Error showing overlay: $e');
+      return false;
+    }
   }
 
   final List<Widget> _pages = [
@@ -114,10 +213,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   ];
 
   void _onItemTapped(int index) {
-    // 强制移除所有焦点，防止输入法闪现
-    FocusManager.instance.primaryFocus?.unfocus();
-    FocusScope.of(context).unfocus();
-    
+    // Use mixin method for unified focus management
+    unfocusBeforeNavigation();
+
     if (_currentIndex != index) {
       setState(() {
         _currentIndex = index;
@@ -129,7 +227,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => FocusScope.of(context).unfocus(),
+      onTap: () => context.clearFocus(),
       child: Scaffold(
         extendBody: true,
         body: Stack(
