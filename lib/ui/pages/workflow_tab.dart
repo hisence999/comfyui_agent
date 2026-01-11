@@ -10,7 +10,6 @@ import '../../mixins/unfocus_mixin.dart';
 import '../../providers/settings_provider.dart';
 import '../../providers/workflow_provider.dart';
 import '../../utils/theme.dart';
-import '../widgets/glass_container.dart';
 import 'parameter_editor.dart';
 
 class WorkflowTab extends StatefulWidget {
@@ -190,9 +189,12 @@ class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClient
                   controller: _ipController,
                   focusNode: _ipFocusNode,
                   autofocus: false,
+                  keyboardType: TextInputType.url,
+                  autocorrect: false,
+                  enableSuggestions: false,
                   decoration: const InputDecoration(
                     border: InputBorder.none,
-                    hintText: 'IP:Port',
+                    hintText: 'IP:Port 或 域名',
                     isDense: true,
                   ),
                   style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
@@ -214,15 +216,47 @@ class _WorkflowTabState extends State<WorkflowTab> with AutomaticKeepAliveClient
   }
 
   void _connect(SettingsProvider settings, WorkflowProvider workflow) {
-    final input = _ipController.text;
-    final parts = input.split(':');
-    if (parts.length == 2) {
-      settings.setAddress(parts[0], parts[1]);
-      workflow.connect(parts[0], parts[1]);
-    } else {
-       settings.setAddress(parts[0], '8188');
-       workflow.connect(parts[0], '8188');
+    var input = _ipController.text.trim();
+    if (input.isEmpty) return;
+
+    // Support flexible input formats (e.g., http://domain.com:8188, domain.com, 192.168.1.5)
+
+    // 1. Remove protocol if present
+    if (input.startsWith('http://')) {
+      input = input.substring(7);
+    } else if (input.startsWith('https://')) {
+      input = input.substring(8);
     }
+
+    // 2. Remove trailing slash
+    if (input.endsWith('/')) {
+      input = input.substring(0, input.length - 1);
+    }
+
+    String host = input;
+    String port = '8188';
+
+    // 3. Parse host and port
+    // Generic parsing strategy: Find the last colon.
+    // If the part after it is a number, it's a port.
+    // This handles:
+    // - domain.com:8188 -> host: domain.com, port: 8188
+    // - 192.168.1.1:8188 -> host: 192.168.1.1, port: 8188
+    // - [::1]:8188 -> host: [::1], port: 8188
+    // - domain.com -> host: domain.com, port: 8188 (default)
+    // - [::1] -> host: [::1], port: 8188 (default)
+
+    final lastColonIndex = input.lastIndexOf(':');
+    if (lastColonIndex != -1) {
+      final potentialPort = input.substring(lastColonIndex + 1);
+      if (int.tryParse(potentialPort) != null) {
+        host = input.substring(0, lastColonIndex);
+        port = potentialPort;
+      }
+    }
+
+    settings.setAddress(host, port);
+    workflow.connect(host, port);
   }
 
   Widget _buildImportButton(BuildContext context) {
